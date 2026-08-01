@@ -1,6 +1,6 @@
 # ata-validator-crystal
 
-Crystal bindings for [ata-validator](https://github.com/) — a high-performance C++20 JSON Schema validator.
+Crystal bindings for [ata-validator](https://github.com/ata-core/ata-validator) — a high-performance C++20 JSON Schema validator.
 
 The C++ core uses simdjson and the RE2 regex engine; this shard only wraps its pure C API (`ata_c.h`). Struct layouts and function signatures match `ata_c.h` exactly.
 
@@ -11,7 +11,7 @@ Add to `shard.yml`:
 ```yaml
 dependencies:
   ata-validator-crystal:
-    github: user/ata-validator-crystal
+    github: groophylifefor/ata-validator-crystal
     version: ~> 0.1.0
 ```
 
@@ -104,4 +104,4 @@ crystal spec --link-flags "/LIBPATH:libata"
 
 ## License
 
-MIT. The C++ core comes from [ata-validator](https://github.com/), MIT licensed (original copyright preserved in `LICENSE`).
+MIT. The C++ core comes from [ata-validator](https://github.com/ata-core/ata-validator), MIT licensed (original copyright preserved in `LICENSE`).
