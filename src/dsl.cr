@@ -1,178 +1,290 @@
-# Type-safe schema DSL on top of ata-validator.
+# Compile-time type-safe schema DSL on top of ata-validator.
 #
-#   User = Ata.object do
+#   Ata.object User do
 #     string :name, min: 3
 #     int :age, gt: 0
 #   end
 #
 #   User.valid?(%({"name": "Mert", "age": 28}))   # => true
+#   u = User.from_json(%({"name": "Mert", "age": 28}))
+#   u.name                                         # => "Mert" (typed getter)
 #
-# The block runs in the builder's scope (`with ... yield`), so bare calls work
-# inside the block; `do |b| b.string :name, min: 3 end` works too. Every field
-# is required unless `optional: true` is passed. The emitted JSON Schema is
-# available via `Schema#schema_json`.
+# `Ata.object` is a macro: it reads the block's AST at compile time and
+# generates a real struct exposing class methods `schema_json`, `validate`,
+# `valid?`, `from_json` plus a typed getter for every field, so `body.title`
+# works at compile time. The block itself is never run at runtime (it is
+# parsed, not executed).
+#
+# Crystal forbids struct definitions as the right-hand side of an assignment
+# (`X = macro ... end` => "can't define struct inside def"), and NamedTuples
+# don't support dot access, so the schema name is passed as the first
+# argument and the generated type is a struct: `Ata.object User do ... end`.
 
 require "json"
 require "./validator"
 
 module Ata
-  # A compiled, reusable schema returned by `Ata.object`.
-  class Schema
-    getter schema_json : String
-
-    def initialize(@schema_json : String)
-      @validator = AtaValidator::Validator.new(@schema_json)
-    end
-
-    def valid?(json : String) : Bool
-      @validator.valid?(json)
-    end
-
-    def validate(json : String) : AtaValidator::ValidationResult
-      @validator.validate(json)
-    end
-
-    def to_s(io : IO)
-      io << @schema_json
-    end
+  module Schemas
   end
 
-  # Collects property definitions and emits the final JSON Schema.
-  class Builder
-    @properties = [] of Tuple(String, String)
-    @required = [] of String
+  # Define a typed schema.
+  #
+  #   Ata.object Task do
+  #     string :title, min: 1
+  #     int :priority, gt: 0, optional: true
+  #   end
+  macro object(struct_name, &block)
+    {% schema_parts = [] of String %}
+    {% getter_parts = [] of String %}
+    {% ctor_parts = [] of String %}
+    {% opt_parts = [] of String %}
+    {% init_parts = [] of String %}
+    {% required_parts = [] of String %}
 
-    def string(name : Symbol, *, min : Int32? = nil, max : Int32? = nil,
-               pattern : String? = nil, format : String? = nil,
-               values : Array(String)? = nil, optional : Bool = false)
-      add(name, optional) do |j|
-        j.field "type", "string"
-        j.field "minLength", min if min
-        j.field "maxLength", max if max
-        j.field "pattern", pattern if pattern
-        j.field "format", format if format
-        j.field "enum", values if values
+    {% exprs = block.body.is_a?(Expressions) ? block.body.expressions : [block.body] %}
+
+    {% for expr in exprs %}
+      {% if expr.is_a?(Call) %}
+        {% kind = expr.name.id.stringify %}
+        {% if ["string", "int", "float", "bool", "any", "array", "object"].includes?(kind) %}
+          {% name = expr.args[0] %}
+          {% name_str = name.id.stringify %}
+
+          {% optional = false %}
+          {% of_value = nil %}
+          {% of_is_symbol = false %}
+          {% if expr.named_args %}
+            {% for na in expr.named_args %}
+              {% if na.name.id.stringify == "optional" %}
+                {% optional = true %}
+              {% elsif na.name.id.stringify == "of" %}
+                {% of_value = na.value %}
+                {% of_is_symbol = na.value.is_a?(SymbolLiteral) %}
+              {% end %}
+            {% end %}
+          {% end %}
+
+          {% if !optional %}
+            {% required_parts << "\"" + name_str + "\"" %}
+          {% end %}
+
+          {% type_map = {"string" => "string", "int" => "integer", "float" => "number", "bool" => "boolean"} %}
+          {% item_type_map = {"string" => "string", "int" => "integer", "float" => "number", "bool" => "boolean"} %}
+          {% item_cast_map = {"string" => "as_s", "int" => "as_i", "float" => "as_f", "bool" => "as_bool"} %}
+          {% prim_type_map = {"string" => "String", "int" => "Int32", "float" => "Float64", "bool" => "Bool", "any" => "JSON::Any"} %}
+
+          # ── schema fragment ──────────────────────────────
+          {% sp = "    j.field \"" + name_str + "\" do\n" %}
+          {% unless kind == "object" %}
+            {% sp = sp + "      j.object do\n" %}
+          {% end %}
+          {% if type_map.has_key?(kind) %}
+            {% sp = sp + "        j.field \"type\", \"" + type_map[kind] + "\"\n" %}
+          {% end %}
+
+          {% if expr.named_args %}
+            {% for na in expr.named_args %}
+              {% key = "" %}
+              {% if na.name.id.stringify == "min" %}
+                {% key = "minLength" %}
+              {% elsif na.name.id.stringify == "max" %}
+                {% key = "maxLength" %}
+              {% elsif na.name.id.stringify == "pattern" %}
+                {% key = "pattern" %}
+              {% elsif na.name.id.stringify == "format" %}
+                {% key = "format" %}
+              {% elsif na.name.id.stringify == "values" %}
+                {% key = "enum" %}
+              {% elsif na.name.id.stringify == "gt" %}
+                {% key = "exclusiveMinimum" %}
+              {% elsif na.name.id.stringify == "lt" %}
+                {% key = "exclusiveMaximum" %}
+              {% elsif na.name.id.stringify == "gte" %}
+                {% key = "minimum" %}
+              {% elsif na.name.id.stringify == "lte" %}
+                {% key = "maximum" %}
+              {% elsif na.name.id.stringify == "min_items" %}
+                {% key = "minItems" %}
+              {% elsif na.name.id.stringify == "max_items" %}
+                {% key = "maxItems" %}
+              {% end %}
+              {% if key != "" %}
+                {% sp = sp + "        j.field \"" + key + "\", #{na.value}\n" %}
+              {% end %}
+            {% end %}
+          {% end %}
+
+          {% if kind == "array" %}
+            {% sp = sp + "        j.field \"items\" do\n" %}
+            {% if of_value && of_is_symbol %}
+              {% if item_type_map.has_key?(of_value.id.stringify) %}
+                {% sp = sp + "          j.object do\n" %}
+                {% sp = sp + "            j.field \"type\", \"" + item_type_map[of_value.id.stringify] + "\"\n" %}
+                {% sp = sp + "          end\n" %}
+              {% else %}
+                {% sp = sp + "          j.raw \"{}\"\n" %}
+              {% end %}
+            {% elsif of_value %}
+              {% sp = sp + "          j.raw " + of_value.stringify + ".schema_json\n" %}
+            {% else %}
+              {% sp = sp + "          j.raw \"{}\"\n" %}
+            {% end %}
+            {% sp = sp + "        end\n" %}
+          {% elsif kind == "object" %}
+            {% if of_value && !of_is_symbol %}
+              {% sp = sp + "        j.raw " + of_value.stringify + ".schema_json\n" %}
+            {% end %}
+          {% end %}
+
+          {% unless kind == "object" %}
+            {% sp = sp + "      end\n" %}
+          {% end %}
+          {% sp = sp + "    end\n" %}
+          {% schema_parts << sp %}
+
+          # ── field type ───────────────────────────────────
+          {% if kind == "string" %}
+            {% type = "String" %}
+          {% elsif kind == "int" %}
+            {% type = "Int32" %}
+          {% elsif kind == "float" %}
+            {% type = "Float64" %}
+          {% elsif kind == "bool" %}
+            {% type = "Bool" %}
+          {% elsif kind == "any" %}
+            {% type = "JSON::Any" %}
+          {% elsif kind == "array" %}
+            {% if of_value && of_is_symbol && prim_type_map.has_key?(of_value.id.stringify) %}
+              {% type = "Array(" + prim_type_map[of_value.id.stringify] + ")" %}
+            {% elsif of_value && !of_is_symbol %}
+              {% type = "Array(" + of_value.stringify + ")" %}
+            {% else %}
+              {% type = "Array(JSON::Any)" %}
+            {% end %}
+          {% elsif kind == "object" %}
+            {% if of_value && !of_is_symbol %}
+              {% type = of_value.stringify %}
+            {% else %}
+              {% type = "JSON::Any" %}
+            {% end %}
+          {% end %}
+
+          {% if optional %}
+            {% type = type + "?" %}
+          {% end %}
+
+          {% getter_parts << "getter " + name_str + " : " + type %}
+          {% if optional %}
+            {% opt_parts << "@" + name_str + " : " + type + " = nil" %}
+          {% else %}
+            {% ctor_parts << "@" + name_str + " : " + type %}
+          {% end %}
+
+          # ── from_json expression ─────────────────────────
+          {% base = "json[\"" + name_str + "\"]" %}
+
+          {% if kind == "string" %}
+            {% cast = ".as_s" %}
+          {% elsif kind == "int" %}
+            {% cast = ".as_i" %}
+          {% elsif kind == "float" %}
+            {% cast = ".as_f" %}
+          {% elsif kind == "bool" %}
+            {% cast = ".as_bool" %}
+          {% else %}
+            {% cast = "" %}
+          {% end %}
+
+          {% if kind == "object" %}
+            {% if of_value && !of_is_symbol %}
+              {% if optional %}
+                {% from_expr = base + "?.try { |v| " + of_value.stringify + ".from_json(v.to_json) }" %}
+              {% else %}
+                {% from_expr = of_value.stringify + ".from_json(" + base + ".to_json)" %}
+              {% end %}
+            {% else %}
+              {% from_expr = optional ? base + "?" : base %}
+            {% end %}
+          {% elsif kind == "array" %}
+            {% if optional %}
+              {% if of_value && of_is_symbol && item_cast_map.has_key?(of_value.id.stringify) %}
+                {% from_expr = base + "?.try { |v| v.as_a.map(&." + item_cast_map[of_value.id.stringify] + ") }" %}
+              {% elsif of_value && !of_is_symbol %}
+                {% from_expr = base + "?.try { |v| v.as_a.map { |w| " + of_value.stringify + ".from_json(w.to_json) } }" %}
+              {% else %}
+                {% from_expr = base + "?.try(&.as_a)" %}
+              {% end %}
+            {% else %}
+              {% if of_value && of_is_symbol && item_cast_map.has_key?(of_value.id.stringify) %}
+                {% from_expr = base + ".as_a.map(&." + item_cast_map[of_value.id.stringify] + ")" %}
+              {% elsif of_value && !of_is_symbol %}
+                {% from_expr = base + ".as_a.map { |v| " + of_value.stringify + ".from_json(v.to_json) }" %}
+              {% else %}
+                {% from_expr = base + ".as_a" %}
+              {% end %}
+            {% end %}
+          {% else %}
+            {% if optional %}
+              {% if kind == "any" %}
+                {% from_expr = base + "?" %}
+              {% else %}
+                {% from_expr = base + "?.try(&" + cast + ")" %}
+              {% end %}
+            {% else %}
+              {% from_expr = base + cast %}
+            {% end %}
+          {% end %}
+
+          {% init_parts << name_str + ": " + from_expr %}
+        {% end %}
+      {% end %}
+    {% end %}
+
+    struct {{struct_name.id}}
+      {{ getter_parts.join("\n").id }}
+
+      @@schema_json : String?
+      @@validator : AtaValidator::Validator?
+
+      def initialize({% for ctor in ctor_parts %}{{ ctor.id }}{% unless ctor == ctor_parts.last %}, {% end %}{% end %}{% unless ctor_parts.empty? || opt_parts.empty? %}, {% end %}{% for opt in opt_parts %}{{ opt.id }}{% unless opt == opt_parts.last %}, {% end %}{% end %})
       end
-    end
 
-    def int(name : Symbol, *, gt : Int32? = nil, lt : Int32? = nil,
-            gte : Int32? = nil, lte : Int32? = nil, optional : Bool = false)
-      add(name, optional) do |j|
-        j.field "type", "integer"
-        j.field "exclusiveMinimum", gt if gt
-        j.field "exclusiveMaximum", lt if lt
-        j.field "minimum", gte if gte
-        j.field "maximum", lte if lte
-      end
-    end
-
-    def float(name : Symbol, *, gt : Float64? = nil, lt : Float64? = nil,
-              gte : Float64? = nil, lte : Float64? = nil, optional : Bool = false)
-      add(name, optional) do |j|
-        j.field "type", "number"
-        j.field "exclusiveMinimum", gt if gt
-        j.field "exclusiveMaximum", lt if lt
-        j.field "minimum", gte if gte
-        j.field "maximum", lte if lte
-      end
-    end
-
-    def bool(name : Symbol, *, optional : Bool = false)
-      add(name, optional) do |j|
-        j.field "type", "boolean"
-      end
-    end
-
-    # Untyped field: any JSON value is accepted.
-    def any(name : Symbol, *, optional : Bool = false)
-      add(name, optional) { |j| }
-    end
-
-    # Array of a primitive type (`of: :string`, `:int`, `:float`, `:bool`, `:any`).
-    def array(name : Symbol, of : Symbol, *, min_items : Int32? = nil,
-              max_items : Int32? = nil, optional : Bool = false)
-      item_type = case of
-                  when :string then "string"
-                  when :int    then "integer"
-                  when :float  then "number"
-                  when :bool   then "boolean"
-                  when :any    then nil
-                  else              raise ArgumentError.new("unknown array item type: #{of}")
-                  end
-      add(name, optional) do |j|
-        j.field "type", "array"
-        j.field "minItems", min_items if min_items
-        j.field "maxItems", max_items if max_items
-        j.field "items" do
-          if item_type
-            j.object { j.field "type", item_type }
-          else
-            j.raw "{}"
-          end
-        end
-      end
-    end
-
-    # Array whose items follow a nested schema.
-    def array(name : Symbol, of : Schema, *, min_items : Int32? = nil,
-              max_items : Int32? = nil, optional : Bool = false)
-      add(name, optional) do |j|
-        j.field "type", "array"
-        j.field "minItems", min_items if min_items
-        j.field "maxItems", max_items if max_items
-        j.field "items" do
-          j.raw of.schema_json
-        end
-      end
-    end
-
-    # Nested object field embedding another schema.
-    def object(name : Symbol, of : Schema, *, optional : Bool = false)
-      @properties << {name.to_s, of.schema_json}
-      @required << name.to_s unless optional
-    end
-
-    def build : Schema
-      full = String.build do |io|
-        JSON.build(io) do |j|
-          j.object do
-            j.field "type", "object"
-            j.field "properties" do
-              j.object do
-                @properties.each do |name, schema|
-                  j.field(name) { j.raw schema }
+      def self.schema_json : String
+        @@schema_json ||= String.build do |io|
+          JSON.build(io) do |j|
+            j.object do
+              j.field "type", "object"
+              j.field "properties" do
+                j.object do
+                  {{ schema_parts.join("\n").id }}
                 end
               end
+              {% unless required_parts.empty? %}
+              j.field "required", [{{ required_parts.join(", ").id }}]
+              {% end %}
             end
-            j.field "required", @required unless @required.empty?
           end
         end
       end
-      Schema.new(full)
-    end
 
-    private def add(name : Symbol, optional : Bool, & : JSON::Builder ->)
-      schema = String.build do |io|
-        JSON.build(io) do |j|
-          j.object do
-            yield j
-          end
-        end
+      def self.validator : AtaValidator::Validator
+        @@validator ||= AtaValidator::Validator.new(schema_json)
       end
-      @properties << {name.to_s, schema}
-      @required << name.to_s unless optional
-    end
-  end
 
-  # Define a reusable schema.
-  #
-  #   User = Ata.object do
-  #     string :name, min: 3
-  #     int :age, gt: 0
-  #   end
-  def self.object(&)
-    builder = Builder.new
-    with builder yield
-    builder.build
+      def self.validate(json : String) : AtaValidator::ValidationResult
+        validator.validate(json)
+      end
+
+      def self.valid?(json : String) : Bool
+        validator.valid?(json)
+      end
+
+      def self.from_json(raw : String) : self
+        json = JSON.parse(raw)
+        new(
+          {{ init_parts.join(",\n").id }}
+        )
+      end
+    end
   end
 end

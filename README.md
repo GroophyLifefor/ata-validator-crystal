@@ -87,10 +87,10 @@ AtaValidator.validate(schema, %({"name": "Mert"})).valid
 
 ## Schema DSL
 
-Define schemas with `Ata.object` instead of writing raw JSON Schema. Every field is required unless `optional: true` is passed; the block can call the builder directly or take a `|b|` argument.
+`Ata.object` is a compile-time macro: it reads the block's AST and generates a real struct with class methods `schema_json`, `validate`, `valid?` and `from_json`, plus a typed getter for every field. Every field is required unless `optional: true` is passed.
 
 ```crystal
-User = Ata.object do
+Ata.object User do
   string :name, min: 3, max: 10
   int :age, gt: 0, lte: 120
   string :email, format: "email", optional: true
@@ -100,6 +100,10 @@ end
 User.valid?(%({"name": "Mert", "age": 28, "active": true}))   # => true
 User.valid?(%({"name": "Me", "age": 28, "active": true}))     # => false (minLength)
 User.valid?(%({"name": "Mert", "age": 0, "active": true}))    # => false (exclusiveMinimum)
+
+u = User.from_json(%({"name": "Mert", "age": 28, "active": true}))
+u.name                # => "Mert"  (typed getter)
+u.email               # => nil     (optional field)
 
 puts User.schema_json
 # {"type":"object","properties":{"name":{"type":"string","minLength":3,"maxLength":10},
@@ -119,12 +123,12 @@ puts User.schema_json
 Nested schemas compose:
 
 ```crystal
-Address = Ata.object do
+Ata.object Address do
   string :city, min: 1
   int :zip, gte: 0
 end
 
-Person = Ata.object do
+Ata.object Person do
   string :name, min: 3
   object :address, of: Address
   array :tags, of: :string, min_items: 1
@@ -141,8 +145,8 @@ end
   - `valid?(json) : Bool`
   - `close` / `finalize` — frees the compiled schema
 - `AtaValidator.validate(schema_json, json) : ValidationResult` — one-shot
-- `Ata.object { ... } : Ata::Schema` — schema DSL (see above)
-  - `Schema#valid?(json) : Bool`, `Schema#validate(json) : ValidationResult`, `Schema#schema_json : String`
+- `Ata.object Name do ... end` — macro DSL (see above)
+  - `Name.valid?(json) : Bool`, `Name.validate(json) : ValidationResult`, `Name.schema_json : String`, `Name.from_json(json) : Name`
 - Error types: `CompileError` (invalid schema), `ValidationError` (`path`, `message`)
 
 ## Test
