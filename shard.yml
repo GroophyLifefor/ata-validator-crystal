@@ -1,0 +1,9 @@
+name: ata-validator-crystal
+version: 0.1.0
+description: Crystal FFI bindings for ata-validator, the C++20 JSON Schema validator
+authors:
+  - Murat Kirazkaya <groophylifefor@gmail.com>
+
+crystal: '>= 1.15.0'
+
+license: MIT
