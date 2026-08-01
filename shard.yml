@@ -6,4 +6,9 @@ authors:
 
 crystal: '>= 1.15.0'
 
+development_dependencies:
+  athena-validator:
+    github: athena-framework/validator
+    version: ~> 0.5.0
+
 license: MIT

@@ -1,0 +1,18 @@
+version: 2.0
+shards:
+  athena-http:
+    git: https://github.com/athena-framework/http.git
+    version: 0.1.0
+
+  athena-image_size:
+    git: https://github.com/athena-framework/image-size.git
+    version: 0.1.4
+
+  athena-mime:
+    git: https://github.com/athena-framework/mime.git
+    version: 0.2.1
+
+  athena-validator:
+    git: https://github.com/athena-framework/validator.git
+    version: 0.5.0
+

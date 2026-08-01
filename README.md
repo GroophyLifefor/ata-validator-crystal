@@ -102,6 +102,68 @@ crystal run scripts/build_native.cr
 crystal spec --link-flags "/LIBPATH:libata"
 ```
 
+## Benchmarks
+
+`bench/` compares `ata-validator-crystal` against `JSON::Serializable` and `Athena::Validator` on five scenarios: parse valid JSON, invalid JSON, nested objects, 100k bulk validation and per-operation allocation.
+
+### Results (2026-08-01, Windows 11 / MSVC, Crystal 1.15.0, `--release --no-debug`)
+
+Higher is better for throughput, lower is better for allocation.
+
+| Scenario | Metric | ata-validator-crystal | JSON::Serializable | Athena::Validator | × vs JSON::Serializable | × vs Athena::Validator |
+|---|---|---|---|---|---|---|
+| Parse valid JSON | ops/s | **750 968** | 449 970 | 299 640 | **1.67×** | **2.51×** |
+| Parse valid JSON | bytes/op | **32** | 816 | 1 232 | **25.5×** | **38.5×** |
+| Invalid JSON (malformed) | ops/s | **641 287** | 1 138 | 1 090 | **563.5×** | **588.3×** |
+| Invalid JSON (malformed) | bytes/op | **112** | 5 504 | 5 504 | **49.1×** | **49.1×** |
+| Nested object | ops/s | **338 270** | 304 255 | 190 074 | **1.11×** | **1.78×** |
+| Nested object | bytes/op | **32** | 1 025 | 1 632 | **32.0×** | **51.0×** |
+| 100.000 validation | ops/s | **844 921** | 407 730 | 274 917 | **2.07×** | **3.07×** |
+| 100.000 validation | bytes/op | **32** | 816 | 1 232 | **25.5×** | **38.5×** |
+| Allocation | bytes/op | **32** | 816 | 1 232 | **25.5×** | **38.5×** |
+
+> **Reading the ratios:** for `ops/s` rows, `N×` = ata-validator-crystal is N× faster; for `bytes/op` rows, `N×` = ata-validator-crystal allocates N× less memory.
+
+> **Note on "Invalid JSON":** `JSON::Serializable` and `Athena::Validator` raise a `JSON::ParseException` on malformed JSON, so each iteration pays exception-handling cost (hence the ~1 000 ops/s and 5.5 kB/op). `ata-validator-crystal` returns `valid=false` with a structured error list instead of throwing, which is why it stays fast.
+
+These numbers are machine- and schema-specific — rerun locally with `crystal build bench/bench.cr --release --no-debug` to reproduce.
+
+```bash
+# build with the shared fixtures (requires the dev dependency: shards install)
+crystal build bench/bench.cr -o bin/bench.exe --release --no-debug --link-flags "/LIBPATH:libata"
+
+# run everything (100k / 20k iterations per scenario)
+$env:PATH = "$PWD\libata;$env:PATH"
+.\bin\bench.exe
+
+# run a subset, or override iterations
+.\bin\bench.exe nested
+.\bin\bench.exe 10000
+```
+
+Each scenario prints:
+
+- **correctness** — whether each target accepts/rejects each fixture
+- **throughput** — total ms and ops/s over N iterations
+- **allocation** — heap bytes per operation (`GC.stats` delta)
+
+### Adding a scenario
+
+Drop a new file into `bench/scenarios/` — it is auto-required. Register a row with `Bench.register`:
+
+```crystal
+require "../framework"
+
+Bench.register("My scenario", description: "...", order: 6) do |s|
+  s.fixture("valid", %({"name": "Mert", "age": 28}))
+  s.fixture("invalid", %({"age": -1}))
+
+  s.target("my-tool") { |json| my_tool_valid?(json) }
+end
+```
+
+Reuse the shared types (`Person`, `PersonWithAddress`, `Bench::SCHEMA_*`, `Bench.person_workloads`) from `bench/support.cr`, or define your own. The first fixture is used for the throughput/allocation runs.
+
 ## License
 
 MIT. The C++ core comes from [ata-validator](https://github.com/ata-core/ata-validator), MIT licensed (original copyright preserved in `LICENSE`).
