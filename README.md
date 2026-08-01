@@ -85,6 +85,54 @@ validator.close
 AtaValidator.validate(schema, %({"name": "Mert"})).valid
 ```
 
+## Schema DSL
+
+Define schemas with `Ata.object` instead of writing raw JSON Schema. Every field is required unless `optional: true` is passed; the block can call the builder directly or take a `|b|` argument.
+
+```crystal
+User = Ata.object do
+  string :name, min: 3, max: 10
+  int :age, gt: 0, lte: 120
+  string :email, format: "email", optional: true
+  bool :active
+end
+
+User.valid?(%({"name": "Mert", "age": 28, "active": true}))   # => true
+User.valid?(%({"name": "Me", "age": 28, "active": true}))     # => false (minLength)
+User.valid?(%({"name": "Mert", "age": 0, "active": true}))    # => false (exclusiveMinimum)
+
+puts User.schema_json
+# {"type":"object","properties":{"name":{"type":"string","minLength":3,"maxLength":10},
+#  "age":{"type":"integer","exclusiveMinimum":0,"maximum":120},...},"required":["name","age","active"]}
+```
+
+| Method | Arguments | JSON Schema |
+|---|---|---|
+| `string` | `min` / `max` → `minLength` / `maxLength`, `pattern`, `format`, `values:` → `enum` | `{"type": "string", ...}` |
+| `int` | `gt` / `lt` → `exclusiveMinimum` / `exclusiveMaximum`, `gte` / `lte` → `minimum` / `maximum` | `{"type": "integer", ...}` |
+| `float` | same as `int` | `{"type": "number", ...}` |
+| `bool` | — | `{"type": "boolean"}` |
+| `any` | — | `{}` (any value accepted) |
+| `array` | `of: :string`/`:int`/`:float`/`:bool`/`:any` or a nested `Ata.object` schema; `min_items` / `max_items` | `{"type": "array", "items": {...}}` |
+| `object` | `of:` a nested `Ata.object` schema | embeds the schema as-is |
+
+Nested schemas compose:
+
+```crystal
+Address = Ata.object do
+  string :city, min: 1
+  int :zip, gte: 0
+end
+
+Person = Ata.object do
+  string :name, min: 3
+  object :address, of: Address
+  array :tags, of: :string, min_items: 1
+end
+```
+
+> `gt:` / `lt:` emit the draft-06/07 boolean-independent form (`"exclusiveMinimum": 0`), which is what the native validator implements.
+
 ## API
 
 - `AtaValidator.version : String`
@@ -93,6 +141,8 @@ AtaValidator.validate(schema, %({"name": "Mert"})).valid
   - `valid?(json) : Bool`
   - `close` / `finalize` — frees the compiled schema
 - `AtaValidator.validate(schema_json, json) : ValidationResult` — one-shot
+- `Ata.object { ... } : Ata::Schema` — schema DSL (see above)
+  - `Schema#valid?(json) : Bool`, `Schema#validate(json) : ValidationResult`, `Schema#schema_json : String`
 - Error types: `CompileError` (invalid schema), `ValidationError` (`path`, `message`)
 
 ## Test
